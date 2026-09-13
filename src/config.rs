@@ -10,6 +10,25 @@ pub struct Config {
     pub cursor: CursorConfig,
     pub auth: AuthConfig,
     pub logging: LoggingConfig,
+    /// Where host/port came from after env overrides (not persisted).
+    #[serde(skip)]
+    pub bind_source: BindSource,
+}
+
+/// Effective bind override provenance for startup logs / /health.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BindSource {
+    pub host: &'static str,
+    pub port: &'static str,
+}
+
+impl Default for BindSource {
+    fn default() -> Self {
+        Self {
+            host: "config",
+            port: "config",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,6 +107,7 @@ impl Default for Config {
             cursor: CursorConfig::default(),
             auth: AuthConfig::default(),
             logging: LoggingConfig::default(),
+            bind_source: BindSource::default(),
         }
     }
 }
@@ -234,6 +254,10 @@ impl Config {
             "long_running" | "long-running" | "long" => {
                 self.server.request_timeout_secs = 900;
                 self.server.max_concurrency = 1;
+                // Queue instead of hard-429 so batched clients (e.g. ATO AI review)
+                // wait for the single slot instead of aborting immediately.
+                self.server.reject_when_busy = true;
+                self.server.queue_wait_secs = 1800;
                 self.cursor.mode = "ask".into();
                 self.cursor.force = false;
             }
@@ -249,39 +273,89 @@ impl Config {
     }
 
     pub fn apply_env_overrides(&mut self) {
-        if let Ok(host) = std::env::var("BRIDGE_HOST") {
-            if !host.is_empty() {
-                self.server.host = host;
+        self.bind_source = BindSource::default();
+
+        // Prefer product-specific vars so a leftover BRIDGE_PORT=8788 from Kiro-API
+        // cannot silently steal Cursor-API's configured port.
+        if let Some(host) = first_nonempty_env(&["CURSOR_API_HOST", "BRIDGE_HOST"]) {
+            let source = if std::env::var("CURSOR_API_HOST").ok().filter(|v| !v.is_empty()).is_some() {
+                "CURSOR_API_HOST"
+            } else {
+                "BRIDGE_HOST"
+            };
+            if source == "BRIDGE_HOST" {
+                tracing::warn!(
+                    "BRIDGE_HOST is set — prefer CURSOR_API_HOST (BRIDGE_* is shared with sibling bridges)"
+                );
             }
+            self.server.host = host;
+            self.bind_source.host = source;
         }
-        if let Ok(port) = std::env::var("BRIDGE_PORT") {
-            if let Ok(p) = port.parse() {
+
+        if let Some(port_raw) = first_nonempty_env(&["CURSOR_API_PORT", "BRIDGE_PORT"]) {
+            let source = if std::env::var("CURSOR_API_PORT").ok().filter(|v| !v.is_empty()).is_some() {
+                "CURSOR_API_PORT"
+            } else {
+                "BRIDGE_PORT"
+            };
+            if let Ok(p) = port_raw.parse() {
+                if source == "BRIDGE_PORT" {
+                    tracing::warn!(
+                        "BRIDGE_PORT={port_raw} overrides config port {} — prefer CURSOR_API_PORT (BRIDGE_* is shared with sibling bridges like Kiro-API)",
+                        self.server.port
+                    );
+                }
                 self.server.port = p;
+                self.bind_source.port = source;
             }
         }
-        if let Ok(key) = std::env::var("BRIDGE_API_KEY") {
-            if !key.is_empty() {
-                self.auth.api_key = key;
-                self.auth.require_auth = true;
-            }
+
+        if let Some(key) = first_nonempty_env(&["CURSOR_API_KEY", "BRIDGE_API_KEY"]) {
+            self.auth.api_key = key;
+            self.auth.require_auth = true;
         }
+
         if let Ok(ws) = std::env::var("CURSOR_WORKSPACE") {
             self.cursor.workspace = ws;
         }
-        if let Ok(model) = std::env::var("BRIDGE_DEFAULT_MODEL") {
-            if !model.is_empty() {
-                self.cursor.default_model = model;
-            }
+
+        if let Some(model) = first_nonempty_env(&["CURSOR_API_DEFAULT_MODEL", "BRIDGE_DEFAULT_MODEL"])
+        {
+            self.cursor.default_model = model;
         }
-        if let Ok(timeout) = std::env::var("BRIDGE_TIMEOUT_SECS") {
+
+        if let Some(timeout) = first_nonempty_env(&["CURSOR_API_TIMEOUT_SECS", "BRIDGE_TIMEOUT_SECS"])
+        {
             if let Ok(t) = timeout.parse() {
                 self.server.request_timeout_secs = t;
             }
         }
-        if let Ok(v) = std::env::var("BRIDGE_JSON_MODE") {
+
+        if let Some(v) = first_nonempty_env(&["CURSOR_API_JSON_MODE", "BRIDGE_JSON_MODE"]) {
             self.cursor.json_mode = matches!(v.to_lowercase().as_str(), "1" | "true" | "yes");
         }
     }
+
+    pub fn bind_source_summary(&self) -> String {
+        format!(
+            "host={} ({}) port={} ({})",
+            self.server.host,
+            self.bind_source.host,
+            self.server.port,
+            self.bind_source.port
+        )
+    }
+}
+
+fn first_nonempty_env(keys: &[&str]) -> Option<String> {
+    for key in keys {
+        if let Ok(v) = std::env::var(key) {
+            if !v.is_empty() {
+                return Some(v);
+            }
+        }
+    }
+    None
 }
 
 /// Human-readable ready banner for logs / stdout / TUI status.
@@ -330,4 +404,38 @@ pub fn redact_secrets(text: &str, enabled: bool) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[test]
+    fn cursor_api_port_wins_over_bridge_port() {
+        let _guard = env_lock().lock().unwrap();
+        std::env::set_var("BRIDGE_PORT", "8788");
+        std::env::set_var("CURSOR_API_PORT", "8787");
+        let mut cfg = Config::default();
+        cfg.server.port = 9999;
+        cfg.apply_env_overrides();
+        assert_eq!(cfg.server.port, 8787);
+        assert_eq!(cfg.bind_source.port, "CURSOR_API_PORT");
+        std::env::remove_var("BRIDGE_PORT");
+        std::env::remove_var("CURSOR_API_PORT");
+    }
+
+    #[test]
+    fn long_running_profile_queues_instead_of_instant_429() {
+        let mut cfg = Config::default();
+        cfg.set_profile("long_running");
+        assert_eq!(cfg.server.max_concurrency, 1);
+        assert!(cfg.server.queue_wait_secs > 0);
+        assert!(cfg.server.reject_when_busy);
+    }
 }

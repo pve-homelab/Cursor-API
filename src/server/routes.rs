@@ -55,6 +55,11 @@ async fn health(State(state): State<AppState>) -> impl IntoResponse {
         "queue_wait_secs": cfg.server.queue_wait_secs,
         "request_timeout_secs": cfg.server.request_timeout_secs,
         "active_requests": state.usage.active(),
+        "available_permits": state.backend.available_permits(),
+        "bind_source": {
+            "host": cfg.bind_source.host,
+            "port": cfg.bind_source.port,
+        },
         "last_error": last_error,
         "usage": state.usage.totals(),
     });

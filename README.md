@@ -315,8 +315,8 @@ Important fields:
 | `server.host` / `port` | `127.0.0.1` / `8787` | Bind locally |
 | `server.request_timeout_secs` | `600` | Per-request agent timeout |
 | `server.max_concurrency` | `2` | Max parallel agent processes |
-| `server.reject_when_busy` | `true` | Return HTTP 429 when slots are full |
-| `server.queue_wait_secs` | `0` | Optional wait before 429 |
+| `server.reject_when_busy` | `true` | Return HTTP 429 when slots are full (after optional queue wait) |
+| `server.queue_wait_secs` | `0` (`1800` in `long_running`) | Wait for a free slot before 429 |
 | `cursor.profile` | `chat` | Preset: `chat`, `json_api`, `long_running` |
 | `cursor.mode` | `ask` | Chat-safe; use `agent` + `force` only if you want file edits |
 | `cursor.json_mode` | `false` | Append JSON instruction + normalize responses |
@@ -328,15 +328,19 @@ Important fields:
 
 ### Environment overrides
 
+Prefer **`CURSOR_API_*`** so a leftover `BRIDGE_PORT` from a sibling bridge (e.g. Kiro-API) cannot steal this process’s port. Legacy `BRIDGE_*` still works as a fallback and logs a warning.
+
 | Variable | Effect |
 |----------|--------|
-| `BRIDGE_HOST` | Override bind host |
-| `BRIDGE_PORT` | Override port |
-| `BRIDGE_API_KEY` | Set bridge auth key |
-| `BRIDGE_TIMEOUT_SECS` | Override request timeout |
-| `BRIDGE_JSON_MODE` | `true`/`1` enables JSON mode |
-| `BRIDGE_DEFAULT_MODEL` | Override default model |
+| `CURSOR_API_HOST` / `BRIDGE_HOST` | Override bind host |
+| `CURSOR_API_PORT` / `BRIDGE_PORT` | Override port |
+| `CURSOR_API_KEY` / `BRIDGE_API_KEY` | Set bridge auth key |
+| `CURSOR_API_TIMEOUT_SECS` / `BRIDGE_TIMEOUT_SECS` | Override request timeout |
+| `CURSOR_API_JSON_MODE` / `BRIDGE_JSON_MODE` | `true`/`1` enables JSON mode |
+| `CURSOR_API_DEFAULT_MODEL` / `BRIDGE_DEFAULT_MODEL` | Override default model |
 | `CURSOR_WORKSPACE` | Override workspace path |
+
+Startup logs and `/health` report `bind_source` (`config` vs env name) plus `available_permits` so you can tell “legitimately busy” from a stuck slot.
 
 ## How it works
 

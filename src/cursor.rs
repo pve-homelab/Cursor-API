@@ -132,6 +132,11 @@ impl CursorBackend {
         resolve_agent_launch(&cfg.binary)
     }
 
+    /// Available concurrency slots (vs usage.active which can briefly desync).
+    pub fn available_permits(&self) -> usize {
+        self.semaphore.available_permits()
+    }
+
     async fn acquire_permit(&self) -> Result<OwnedSemaphorePermit, BusyError> {
         let policy = *self.policy.read();
         if policy.reject_when_busy {
@@ -167,9 +172,10 @@ impl CursorBackend {
         let cfg = self.config.read().clone();
         let launch = resolve_agent_launch(&cfg.binary)?;
         let mut cmd = build_command(&launch, &cfg, &req, false)?;
-        let output = timeout(Duration::from_secs(timeout_secs), cmd.output())
-            .await
-            .context("cursor agent timed out")?
+        let mut child = cmd
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
             .with_context(|| {
                 format!(
                     "failed to spawn cursor agent ({})",
@@ -177,18 +183,62 @@ impl CursorBackend {
                 )
             })?;
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut stdout_pipe = child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow!("missing agent stdout"))?;
+        let mut stderr_pipe = child
+            .stderr
+            .take()
+            .ok_or_else(|| anyhow!("missing agent stderr"))?;
+
+        let stdout_task = tokio::spawn(async move {
+            let mut buf = Vec::new();
+            tokio::io::AsyncReadExt::read_to_end(&mut stdout_pipe, &mut buf)
+                .await
+                .map(|_| buf)
+        });
+        let stderr_task = tokio::spawn(async move {
+            let mut buf = Vec::new();
+            tokio::io::AsyncReadExt::read_to_end(&mut stderr_pipe, &mut buf)
+                .await
+                .map(|_| buf)
+        });
+
+        let status = match timeout(Duration::from_secs(timeout_secs), child.wait()).await {
+            Ok(result) => result.with_context(|| {
+                format!("failed waiting for cursor agent ({})", launch.display)
+            })?,
+            Err(_) => {
+                kill_agent_tree(&mut child).await;
+                let _ = child.wait().await;
+                stdout_task.abort();
+                stderr_task.abort();
+                return Err(CompleteError::Other(anyhow!("cursor agent timed out")));
+            }
+        };
+
+        let stdout = stdout_task
+            .await
+            .context("join stdout reader")?
+            .context("read agent stdout")?;
+        let stderr = stderr_task
+            .await
+            .context("join stderr reader")?
+            .context("read agent stderr")?;
+
+        if !status.success() {
+            let stderr = String::from_utf8_lossy(&stderr);
+            let stdout = String::from_utf8_lossy(&stdout);
             return Err(CompleteError::Other(anyhow!(
                 "cursor agent failed ({}): {} {}",
-                output.status,
+                status,
                 stderr.trim(),
                 stdout.trim()
             )));
         }
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stdout = String::from_utf8_lossy(&stdout);
         parse_json_result(&stdout).map_err(CompleteError::Other)
     }
 
@@ -318,6 +368,20 @@ fn build_command(
     Ok(cmd)
 }
 
+/// Kill the agent process and, on Windows, its whole tree (node grandchildren).
+async fn kill_agent_tree(child: &mut Child) {
+    #[cfg(windows)]
+    if let Some(pid) = child.id() {
+        let _ = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await;
+    }
+    let _ = child.kill().await;
+}
+
 async fn stream_child(
     mut child: Child,
     stdout: impl tokio::io::AsyncRead + Unpin,
@@ -337,13 +401,13 @@ async fn stream_child(
         let mut stderr_done = false;
         loop {
             if *cancel_rx.borrow() {
-                let _ = child.kill().await;
+                kill_agent_tree(&mut child).await;
                 bail!("client disconnected");
             }
             tokio::select! {
                 changed = cancel_rx.changed() => {
                     if changed.is_ok() && *cancel_rx.borrow() {
-                        let _ = child.kill().await;
+                        kill_agent_tree(&mut child).await;
                         bail!("client disconnected");
                     }
                 }
@@ -356,7 +420,7 @@ async fn stream_child(
                             match handle_stream_line(&line, &mut assembled, &mut session_id, &mut duration_ms, &mut saw_result) {
                                 Ok(Some(delta)) => {
                                     if tx.send(StreamEvent::Delta(delta)).await.is_err() {
-                                        let _ = child.kill().await;
+                                        kill_agent_tree(&mut child).await;
                                         bail!("client disconnected");
                                     }
                                 }
@@ -389,7 +453,7 @@ async fn stream_child(
         Ok(Ok(())) => {}
         Ok(Err(err)) => return Err(err),
         Err(_) => {
-            let _ = child.kill().await;
+            kill_agent_tree(&mut child).await;
             bail!("cursor agent stream timed out");
         }
     }

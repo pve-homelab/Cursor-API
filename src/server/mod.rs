@@ -19,7 +19,9 @@ pub async fn run_server(state: AppState, mut stop_rx: watch::Receiver<bool>) -> 
 
     let app = build_router(state.clone());
 
-    state.logs.info(format!("binding HTTP server on {addr}"));
+    let cfg = state.config.read().clone();
+    let bind_src = cfg.bind_source_summary();
+    state.logs.info(format!("binding HTTP server on {addr} · {bind_src}"));
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .with_context(|| format!("failed to bind {addr}"))?;
@@ -27,11 +29,11 @@ pub async fn run_server(state: AppState, mut stop_rx: watch::Receiver<bool>) -> 
     state.server_running.store(true, Ordering::SeqCst);
     state.server_healthy.store(true, Ordering::SeqCst);
     *state.started_at.write() = Some(chrono::Local::now());
-    let cfg = state.config.read().clone();
     let banner = crate::config::ready_banner(&cfg, state.agent_version.read().clone());
     state.logs.info(banner.clone());
     // Also print to stdout for `serve` / headless so it is visible without the TUI.
     println!("{banner}");
+    println!("bind source: {bind_src}");
 
     let server = axum::serve(listener, app).with_graceful_shutdown(async move {
         loop {

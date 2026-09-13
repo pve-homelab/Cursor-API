@@ -31,7 +31,7 @@ pub fn help_lines() -> Vec<Line<'static>> {
     lines.push(Line::from(""));
     lines.push(Line::from("Profiles: chat · json_api · long_running"));
     lines.push(Line::from(
-        "Env: BRIDGE_HOST BRIDGE_PORT BRIDGE_API_KEY BRIDGE_TIMEOUT_SECS BRIDGE_JSON_MODE BRIDGE_DEFAULT_MODEL CURSOR_WORKSPACE",
+        "Env: CURSOR_API_HOST/PORT/KEY (preferred) · legacy BRIDGE_* · CURSOR_WORKSPACE",
     ));
     lines.push(Line::from(""));
 
