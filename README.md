@@ -328,7 +328,7 @@ Important fields:
 
 ### Environment overrides
 
-Prefer **`CURSOR_API_*`** so a leftover `BRIDGE_PORT` from a sibling bridge (e.g. Kiro-API) cannot steal this process’s port. Legacy `BRIDGE_*` still works as a fallback and logs a warning.
+Prefer **`CURSOR_API_*`** so a leftover `BRIDGE_PORT` from another process cannot steal this process’s port. Legacy `BRIDGE_*` still works as a fallback and logs a warning.
 
 | Variable | Effect |
 |----------|--------|

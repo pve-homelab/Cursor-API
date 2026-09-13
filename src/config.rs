@@ -254,8 +254,8 @@ impl Config {
             "long_running" | "long-running" | "long" => {
                 self.server.request_timeout_secs = 900;
                 self.server.max_concurrency = 1;
-                // Queue instead of hard-429 so batched clients (e.g. ATO AI review)
-                // wait for the single slot instead of aborting immediately.
+                // Queue instead of hard-429 so batched clients can wait for the single slot
+                // instead of aborting immediately.
                 self.server.reject_when_busy = true;
                 self.server.queue_wait_secs = 1800;
                 self.cursor.mode = "ask".into();
@@ -275,8 +275,8 @@ impl Config {
     pub fn apply_env_overrides(&mut self) {
         self.bind_source = BindSource::default();
 
-        // Prefer product-specific vars so a leftover BRIDGE_PORT=8788 from Kiro-API
-        // cannot silently steal Cursor-API's configured port.
+        // Prefer product-specific vars so a leftover BRIDGE_PORT from another
+        // bridge process cannot silently steal Cursor-API's configured port.
         if let Some(host) = first_nonempty_env(&["CURSOR_API_HOST", "BRIDGE_HOST"]) {
             let source = if std::env::var("CURSOR_API_HOST").ok().filter(|v| !v.is_empty()).is_some() {
                 "CURSOR_API_HOST"
@@ -285,7 +285,7 @@ impl Config {
             };
             if source == "BRIDGE_HOST" {
                 tracing::warn!(
-                    "BRIDGE_HOST is set — prefer CURSOR_API_HOST (BRIDGE_* is shared with sibling bridges)"
+                    "BRIDGE_HOST is set — prefer CURSOR_API_HOST (BRIDGE_* is a shared legacy name)"
                 );
             }
             self.server.host = host;
@@ -301,7 +301,7 @@ impl Config {
             if let Ok(p) = port_raw.parse() {
                 if source == "BRIDGE_PORT" {
                     tracing::warn!(
-                        "BRIDGE_PORT={port_raw} overrides config port {} — prefer CURSOR_API_PORT (BRIDGE_* is shared with sibling bridges like Kiro-API)",
+                        "BRIDGE_PORT={port_raw} overrides config port {} — prefer CURSOR_API_PORT (BRIDGE_* is a shared legacy name)",
                         self.server.port
                     );
                 }
