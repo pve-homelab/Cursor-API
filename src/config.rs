@@ -75,6 +75,10 @@ pub struct CursorConfig {
     pub prompt_suffix: String,
     /// Preset profile: chat | json_api | long_running (applied on load/save if set).
     pub profile: String,
+    /// Advertised context budget (tokens). Soft warn when prompts exceed this.
+    pub max_context_tokens: u32,
+    /// When true, truncate prompts that exceed max_context_tokens (default false).
+    pub truncate_over_context: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -141,6 +145,8 @@ impl Default for CursorConfig {
             prompt_prefix: String::new(),
             prompt_suffix: String::new(),
             profile: "chat".into(),
+            max_context_tokens: 128_000,
+            truncate_over_context: false,
         }
     }
 }
@@ -278,7 +284,11 @@ impl Config {
         // Prefer product-specific vars so a leftover BRIDGE_PORT from another
         // bridge process cannot silently steal Cursor-API's configured port.
         if let Some(host) = first_nonempty_env(&["CURSOR_API_HOST", "BRIDGE_HOST"]) {
-            let source = if std::env::var("CURSOR_API_HOST").ok().filter(|v| !v.is_empty()).is_some() {
+            let source = if std::env::var("CURSOR_API_HOST")
+                .ok()
+                .filter(|v| !v.is_empty())
+                .is_some()
+            {
                 "CURSOR_API_HOST"
             } else {
                 "BRIDGE_HOST"
@@ -293,7 +303,11 @@ impl Config {
         }
 
         if let Some(port_raw) = first_nonempty_env(&["CURSOR_API_PORT", "BRIDGE_PORT"]) {
-            let source = if std::env::var("CURSOR_API_PORT").ok().filter(|v| !v.is_empty()).is_some() {
+            let source = if std::env::var("CURSOR_API_PORT")
+                .ok()
+                .filter(|v| !v.is_empty())
+                .is_some()
+            {
                 "CURSOR_API_PORT"
             } else {
                 "BRIDGE_PORT"
@@ -319,12 +333,14 @@ impl Config {
             self.cursor.workspace = ws;
         }
 
-        if let Some(model) = first_nonempty_env(&["CURSOR_API_DEFAULT_MODEL", "BRIDGE_DEFAULT_MODEL"])
+        if let Some(model) =
+            first_nonempty_env(&["CURSOR_API_DEFAULT_MODEL", "BRIDGE_DEFAULT_MODEL"])
         {
             self.cursor.default_model = model;
         }
 
-        if let Some(timeout) = first_nonempty_env(&["CURSOR_API_TIMEOUT_SECS", "BRIDGE_TIMEOUT_SECS"])
+        if let Some(timeout) =
+            first_nonempty_env(&["CURSOR_API_TIMEOUT_SECS", "BRIDGE_TIMEOUT_SECS"])
         {
             if let Ok(t) = timeout.parse() {
                 self.server.request_timeout_secs = t;
@@ -333,6 +349,24 @@ impl Config {
 
         if let Some(v) = first_nonempty_env(&["CURSOR_API_JSON_MODE", "BRIDGE_JSON_MODE"]) {
             self.cursor.json_mode = matches!(v.to_lowercase().as_str(), "1" | "true" | "yes");
+        }
+
+        if let Some(v) =
+            first_nonempty_env(&["CURSOR_API_MAX_CONTEXT_TOKENS", "BRIDGE_MAX_CONTEXT_TOKENS"])
+        {
+            if let Ok(n) = v.parse::<u32>() {
+                if n > 0 {
+                    self.cursor.max_context_tokens = n;
+                }
+            }
+        }
+
+        if let Some(v) = first_nonempty_env(&[
+            "CURSOR_API_TRUNCATE_OVER_CONTEXT",
+            "BRIDGE_TRUNCATE_OVER_CONTEXT",
+        ]) {
+            self.cursor.truncate_over_context =
+                matches!(v.to_lowercase().as_str(), "1" | "true" | "yes");
         }
     }
 

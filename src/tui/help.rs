@@ -17,7 +17,7 @@ pub fn help_lines() -> Vec<Line<'static>> {
         "Local OpenAI-compatible /v1 proxy backed by the Cursor Agent CLI.",
     ));
     lines.push(Line::from(
-        "The TUI starts the HTTP API automatically. Use the CLI tab for an interactive agent shell.",
+        "The TUI starts the HTTP API automatically. Agent tab = interactive chat; CLI tab = shell (far right).",
     ));
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
@@ -27,6 +27,10 @@ pub fn help_lines() -> Vec<Line<'static>> {
     lines.push(Line::from(vec![
         Span::styled("Default model: ", Style::default().fg(Color::DarkGray)),
         Span::raw("auto  (see ready banner / /health → default_model)"),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("Max context tokens: ", Style::default().fg(Color::DarkGray)),
+        Span::raw("Dashboard + Config (default 128000)"),
     ]));
     lines.push(Line::from(""));
     lines.push(Line::from("Profiles: chat · json_api · long_running"));
@@ -57,12 +61,15 @@ pub fn help_lines() -> Vec<Line<'static>> {
         Style::default().add_modifier(Modifier::BOLD),
     )));
     lines.push(Line::from(
-        "  1–6 / Tab     switch pages (on CLI tab: Ctrl+← / Ctrl+→ or F1–F6)",
+        "  Tabs: Dashboard · Config · Logs · Usage · Help · Agent · CLI",
+    ));
+    lines.push(Line::from(
+        "  1–7 / Tab     switch pages (on Agent/CLI: Ctrl+← / Ctrl+→ or F1–F7)",
     ));
     lines.push(Line::from("  s             start/stop API (Dashboard)"));
     lines.push(Line::from("  r             health-check agent (Dashboard)"));
     lines.push(Line::from("  t             smoke test (Dashboard)"));
-    lines.push(Line::from("  q / Esc       quit Cursor-API"));
+    lines.push(Line::from("  q / Esc       quit (Ctrl+Q always works)"));
     lines.push(Line::from(""));
 
     section_title(&mut lines, "3. /v1 API compatibility");
@@ -108,24 +115,33 @@ pub fn help_lines() -> Vec<Line<'static>> {
     lines.push(compat_line(false, "embeddings / audio / assistants API"));
     lines.push(Line::from(""));
 
-    section_title(&mut lines, "4. CLI tab (embedded agent shell)");
+    section_title(&mut lines, "4. Agent tab (interactive chat)");
     lines.push(Line::from(
-        "Opens a real terminal (PowerShell / your $SHELL) with agent on PATH.",
+        "Separate lane from /v1: opens an interactive Cursor agent session in an embedded PTY.",
+    ));
+    lines.push(Line::from(
+        "API headless jobs do not share this chat. Shift+R restarts. Leave with F1–F7 or Ctrl+←/→.",
+    ));
+    lines.push(Line::from(""));
+
+    section_title(&mut lines, "5. CLI tab (generic shell)");
+    lines.push(Line::from(
+        "Far-right tab. Opens PowerShell / $SHELL with agent on PATH for ad-hoc commands.",
     ));
     lines.push(Line::from(
         "Type agent … as usual: agent --version · agent login · agent -p \"…\"",
     ));
-    lines.push(Line::from(
-        "Ctrl+L clears the local view hint; type exit to leave the shell process (session restarts).",
-    ));
     lines.push(Line::from(""));
 
-    section_title(&mut lines, "5. Safety");
+    section_title(&mut lines, "6. Safety");
     lines.push(Line::from(
         "Default mode is ask (read-only). Keep force=false unless you want workspace writes.",
     ));
     lines.push(Line::from(
         "Prefer bind 127.0.0.1 and a bridge API key for anything beyond solo local use.",
+    ));
+    lines.push(Line::from(
+        "Large prompts are staged to a temp file on Windows to avoid os error 206 (command line too long).",
     ));
 
     lines

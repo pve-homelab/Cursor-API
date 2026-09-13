@@ -50,6 +50,8 @@ async fn health(State(state): State<AppState>) -> impl IntoResponse {
         "mode": cfg.cursor.mode,
         "json_mode": cfg.cursor.json_mode,
         "flatten_mode": cfg.cursor.message_flatten_mode,
+        "max_context_tokens": cfg.cursor.max_context_tokens,
+        "truncate_over_context": cfg.cursor.truncate_over_context,
         "max_concurrency": cfg.server.max_concurrency,
         "reject_when_busy": cfg.server.reject_when_busy,
         "queue_wait_secs": cfg.server.queue_wait_secs,
@@ -124,14 +126,39 @@ async fn chat_completions(
             .is_some_and(|rf| rf.wants_json());
 
     let flatten = FlattenMode::parse(&cfg.cursor.message_flatten_mode);
-    let prompt = build_prompt(
+    let mut prompt = build_prompt(
         &req.messages,
         flatten,
         &cfg.cursor.prompt_prefix,
         &cfg.cursor.prompt_suffix,
         json_mode,
     );
-    let prompt_tokens = estimate_tokens(&prompt);
+    let mut prompt_tokens = estimate_tokens(&prompt);
+    let max_ctx = cfg.cursor.max_context_tokens.max(1);
+    if prompt_tokens > max_ctx {
+        state.logs.warn(format!(
+            "prompt tokens≈{prompt_tokens} exceed max_context_tokens={max_ctx} request_id={request_id} truncate={}",
+            cfg.cursor.truncate_over_context
+        ));
+        tracing::warn!(
+            target: "cursor_api",
+            prompt_tokens,
+            max_context_tokens = max_ctx,
+            truncate = cfg.cursor.truncate_over_context,
+            %request_id,
+            "prompt exceeds max_context_tokens"
+        );
+        if cfg.cursor.truncate_over_context {
+            // estimate_tokens ≈ chars/4; keep a small safety margin under the budget.
+            let max_chars = (max_ctx as usize).saturating_mul(4).saturating_sub(16);
+            let truncated: String = prompt.chars().take(max_chars).collect();
+            prompt = truncated;
+            prompt_tokens = estimate_tokens(&prompt);
+            state.logs.warn(format!(
+                "truncated prompt to ≈{prompt_tokens} tokens (max_context_tokens={max_ctx}) request_id={request_id}"
+            ));
+        }
+    }
     let id = format!("chatcmpl-{}", Uuid::new_v4());
     let started = Instant::now();
     let user = req.user.clone();

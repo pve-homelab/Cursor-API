@@ -16,20 +16,6 @@ Your app  →  http://127.0.0.1:8787/v1/chat/completions  →  agent -p (Cursor 
 
 **Important:** do **not** run interactive `agent` chat as your server. Login once, then start **Cursor-API** (`cursor-api`) — that is the control panel. API calls spawn short headless `agent -p` jobs in the background; you stay in the TUI.
 
-### Quick start
-
-The same three commands build and start the project on every operating system:
-
-```text
-git clone https://github.com/pve-homelab/Cursor-API.git
-cd Cursor-API
-cargo run --release
-```
-
-The first build downloads Rust dependencies and may take a few minutes. When the TUI opens, the API is available at `http://127.0.0.1:8787/v1`. Keep that terminal open while using the API.
-
-Before running those commands, complete the one-time setup for your operating system below.
-
 ### Shared prerequisites (all platforms)
 
 1. Install **Rust**: https://rustup.rs/
@@ -60,9 +46,10 @@ agent --version
 **3. Build and start Cursor-API (TUI + API)**
 
 ```powershell
-git clone https://github.com/pve-homelab/Cursor-API.git
+git clone https://github.com/<you>/Cursor-API.git
 cd Cursor-API
-cargo run --release
+cargo build --release
+.\target\release\cursor-api.exe
 ```
 
 That opens the **TUI** and **starts the HTTP API automatically**. Leave this window open.
@@ -123,9 +110,10 @@ agent --version
 **3. Build and start Cursor-API (TUI + API)**
 
 ```bash
-git clone https://github.com/pve-homelab/Cursor-API.git
+git clone https://github.com/<you>/Cursor-API.git
 cd Cursor-API
-cargo run --release
+cargo build --release
+./target/release/cursor-api
 ```
 
 That opens the **TUI** and **starts the HTTP API automatically**. Leave this terminal open.
@@ -184,9 +172,10 @@ agent --version
 **3. Build and start Cursor-API (TUI + API)**
 
 ```bash
-git clone https://github.com/pve-homelab/Cursor-API.git
+git clone https://github.com/<you>/Cursor-API.git
 cd Cursor-API
-cargo run --release
+cargo build --release
+./target/release/cursor-api
 ```
 
 That opens the **TUI** and **starts the HTTP API automatically**. Leave this terminal open.
@@ -226,6 +215,7 @@ curl -s http://127.0.0.1:8787/v1/chat/completions \
 | Auth / login errors | Run `agent login` once in a normal shell (or set Cursor API key in TUI Config) |
 | Can’t connect to `8787` | Make sure the TUI is still open and shows RUNNING (press `s` if stopped) |
 | `failed to spawn cursor agent` | Run `cursor-api doctor`. Bridge prefers bundled Node: Windows `%LOCALAPPDATA%\cursor-agent\versions\*\node.exe`, macOS/Linux `~/.local/share/cursor-agent/versions/*/node` |
+| `os error 206` / filename too long | Large prompts exceeded Windows CreateProcess argv limits. Current builds stage long prompts to a temp file automatically — upgrade/restart `cursor-api` |
 | Slow first reply | Normal — first Cursor CLI run can take a bit |
 | TUI without auto-start | `cursor-api tui --no-autostart` then press `s` |
 
@@ -338,6 +328,7 @@ Prefer **`CURSOR_API_*`** so a leftover `BRIDGE_PORT` from another process canno
 | `CURSOR_API_TIMEOUT_SECS` / `BRIDGE_TIMEOUT_SECS` | Override request timeout |
 | `CURSOR_API_JSON_MODE` / `BRIDGE_JSON_MODE` | `true`/`1` enables JSON mode |
 | `CURSOR_API_DEFAULT_MODEL` / `BRIDGE_DEFAULT_MODEL` | Override default model |
+| `CURSOR_API_MAX_CONTEXT_TOKENS` / `BRIDGE_MAX_CONTEXT_TOKENS` | Override context budget |
 | `CURSOR_WORKSPACE` | Override workspace path |
 
 Startup logs and `/health` report `bind_source` (`config` vs env name) plus `available_permits` so you can tell “legitimately busy” from a stuck slot.

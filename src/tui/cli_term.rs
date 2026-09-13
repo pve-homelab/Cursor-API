@@ -23,7 +23,61 @@ pub struct CliTerminal {
 }
 
 impl CliTerminal {
+    /// Generic shell PTY (PowerShell / $SHELL) for the CLI tab.
     pub fn start(cols: u16, rows: u16, cwd: Option<&str>) -> Result<Self> {
+        let mut cmd = shell_command();
+        if let Some(dir) = cwd {
+            if !dir.is_empty() {
+                cmd.cwd(dir);
+            }
+        }
+        enrich_path(&mut cmd);
+        Self::start_with_command(cols, rows, cmd, "shell started — type agent commands normally")
+    }
+
+    /// Interactive Cursor Agent PTY (separate from /v1 headless jobs).
+    pub fn start_agent(
+        cols: u16,
+        rows: u16,
+        cwd: Option<&str>,
+        program: &std::path::Path,
+        prefix_args: &[String],
+        model: &str,
+        trust: bool,
+    ) -> Result<Self> {
+        let mut cmd = CommandBuilder::new(program);
+        for arg in prefix_args {
+            cmd.arg(arg);
+        }
+        if !model.is_empty() {
+            cmd.arg("--model");
+            cmd.arg(model);
+        }
+        if trust {
+            cmd.arg("--trust");
+        }
+        if let Some(dir) = cwd {
+            if !dir.is_empty() {
+                cmd.cwd(dir);
+                cmd.arg("--workspace");
+                cmd.arg(dir);
+            }
+        }
+        enrich_path(&mut cmd);
+        Self::start_with_command(
+            cols,
+            rows,
+            cmd,
+            "agent chat started — separate from /v1 API jobs",
+        )
+    }
+
+    fn start_with_command(
+        cols: u16,
+        rows: u16,
+        cmd: CommandBuilder,
+        status: &str,
+    ) -> Result<Self> {
         let cols = cols.max(40);
         let rows = rows.max(10);
         let pty_system = native_pty_system();
@@ -36,34 +90,10 @@ impl CliTerminal {
             })
             .context("openpty")?;
 
-        let mut cmd = shell_command();
-        if let Some(dir) = cwd {
-            if !dir.is_empty() {
-                cmd.cwd(dir);
-            }
-        }
-        // Ensure common agent install dirs are visible in the embedded shell.
-        #[cfg(windows)]
-        {
-            if let Ok(local) = std::env::var("LOCALAPPDATA") {
-                let agent_dir = format!("{local}\\cursor-agent");
-                prepend_path_env(&mut cmd, &agent_dir);
-            }
-        }
-        #[cfg(not(windows))]
-        {
-            if let Some(home) = dirs::home_dir() {
-                prepend_path_env(
-                    &mut cmd,
-                    &home.join(".local").join("bin").display().to_string(),
-                );
-            }
-        }
-
         let child = pair
             .slave
             .spawn_command(cmd)
-            .context("spawn shell in pty")?;
+            .context("spawn command in pty")?;
         drop(pair.slave);
 
         let mut reader = pair
@@ -99,7 +129,7 @@ impl CliTerminal {
             flag.store(false, Ordering::SeqCst);
         });
 
-        let term = Self {
+        Ok(Self {
             parser: Parser::new(rows, cols, 2000),
             writer,
             master: pair.master,
@@ -109,9 +139,8 @@ impl CliTerminal {
             _child_wait: wait_handle,
             cols,
             rows,
-            status: "shell started — type agent commands normally".into(),
-        };
-        Ok(term)
+            status: status.into(),
+        })
     }
 
     pub fn alive(&self) -> bool {
@@ -223,6 +252,24 @@ fn shell_command() -> CommandBuilder {
         let mut cmd = CommandBuilder::new(shell);
         cmd.arg("-l");
         cmd
+    }
+}
+
+fn enrich_path(cmd: &mut CommandBuilder) {
+    #[cfg(windows)]
+    {
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            prepend_path_env(cmd, &format!("{local}\\cursor-agent"));
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        if let Some(home) = dirs::home_dir() {
+            prepend_path_env(
+                cmd,
+                &home.join(".local").join("bin").display().to_string(),
+            );
+        }
     }
 }
 

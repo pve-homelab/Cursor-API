@@ -171,7 +171,8 @@ impl CursorBackend {
 
         let cfg = self.config.read().clone();
         let launch = resolve_agent_launch(&cfg.binary)?;
-        let mut cmd = build_command(&launch, &cfg, &req, false)?;
+        let staged = stage_prompt(&req.prompt, &cfg.workspace).map_err(CompleteError::Other)?;
+        let mut cmd = build_command(&launch, &cfg, &req.model, &staged.cli_prompt, false)?;
         let mut child = cmd
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -214,9 +215,11 @@ impl CursorBackend {
                 let _ = child.wait().await;
                 stdout_task.abort();
                 stderr_task.abort();
+                drop(staged);
                 return Err(CompleteError::Other(anyhow!("cursor agent timed out")));
             }
         };
+        drop(staged);
 
         let stdout = stdout_task
             .await
@@ -251,7 +254,8 @@ impl CursorBackend {
 
         let cfg = self.config.read().clone();
         let launch = resolve_agent_launch(&cfg.binary)?;
-        let mut cmd = build_command(&launch, &cfg, &req, true)?;
+        let staged = stage_prompt(&req.prompt, &cfg.workspace)?;
+        let mut cmd = build_command(&launch, &cfg, &req.model, &staged.cli_prompt, true)?;
         let mut child = cmd
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -277,6 +281,7 @@ impl CursorBackend {
 
         tokio::spawn(async move {
             let _permit = permit;
+            let _staged = staged;
             let result =
                 stream_child(child, stdout, stderr, timeout_secs, cancel_rx, tx.clone()).await;
             if let Err(err) = result {
@@ -304,10 +309,72 @@ pub struct AgentLaunch {
     pub display: String,
 }
 
+/// Windows CreateProcess command-line limit is ~32 767 chars and surfaces as
+/// `os error 206` ("filename or extension is too long") when a large prompt
+/// is passed as a single argv. Keep a conservative headroom for flags/paths.
+#[cfg(windows)]
+const INLINE_PROMPT_MAX_CHARS: usize = 4_000;
+#[cfg(not(windows))]
+const INLINE_PROMPT_MAX_CHARS: usize = 100_000;
+
+struct StagedPrompt {
+    cli_prompt: String,
+    temp_path: Option<PathBuf>,
+}
+
+impl Drop for StagedPrompt {
+    fn drop(&mut self) {
+        if let Some(path) = self.temp_path.take() {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+}
+
+fn stage_prompt(prompt: &str, workspace: &str) -> Result<StagedPrompt> {
+    if prompt.len() <= INLINE_PROMPT_MAX_CHARS {
+        return Ok(StagedPrompt {
+            cli_prompt: prompt.to_string(),
+            temp_path: None,
+        });
+    }
+
+    let dir = if !workspace.is_empty() {
+        PathBuf::from(workspace).join(".cursor-api-prompts")
+    } else {
+        std::env::temp_dir().join("cursor-api-prompts")
+    };
+    std::fs::create_dir_all(&dir)
+        .with_context(|| format!("create prompt staging dir {}", dir.display()))?;
+
+    let path = dir.join(format!("prompt-{}.txt", uuid::Uuid::new_v4()));
+    std::fs::write(&path, prompt)
+        .with_context(|| format!("write staged prompt {}", path.display()))?;
+
+    let path_display = path.display().to_string();
+    tracing::info!(
+        target: "cursor_cli",
+        "prompt {} chars exceeds inline limit {}; staged at {}",
+        prompt.len(),
+        INLINE_PROMPT_MAX_CHARS,
+        path_display
+    );
+
+    let cli_prompt = format!(
+        "Read the UTF-8 text file at this exact path and follow its instructions completely as your sole task. \
+Do not ask clarifying questions. Reply with only the final answer required by that file.\n\nPath: {path_display}"
+    );
+
+    Ok(StagedPrompt {
+        cli_prompt,
+        temp_path: Some(path),
+    })
+}
+
 fn build_command(
     launch: &AgentLaunch,
     cfg: &CursorConfig,
-    req: &ChatRequest,
+    model: &str,
+    cli_prompt: &str,
     stream: bool,
 ) -> Result<Command> {
     let mut cmd = Command::new(&launch.program);
@@ -323,10 +390,10 @@ fn build_command(
         cmd.arg("json");
     }
 
-    let model = if req.model.is_empty() || req.model == "default" {
+    let model = if model.is_empty() || model == "default" {
         cfg.default_model.clone()
     } else {
-        req.model.clone()
+        model.to_string()
     };
     cmd.arg("--model").arg(&model);
 
@@ -363,7 +430,7 @@ fn build_command(
         cmd.env("CURSOR_API_KEY", &cfg.cursor_api_key);
     }
 
-    cmd.arg(&req.prompt);
+    cmd.arg(cli_prompt);
     cmd.kill_on_drop(true);
     Ok(cmd)
 }
